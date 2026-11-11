@@ -288,3 +288,10 @@ tr.clickable:hover td { background: #f8f9fb; }
   #app, #modal-root, #toast-root { display: none !important; }
   #print-area { display: block; }
 }
+
+/* ---------- Indicador de sincronización ---------- */
+.sync-ind { margin-left: auto; min-height: 30px; padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600;
+  background: var(--navy-soft); color: var(--ink-2); border: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 62vw; }
+.sync-ind.warn { background: #fff4d6; color: #7a5200; }
+.sync-ind.bad { background: #fde3e1; color: #a1271f; }
+.sync-ind[hidden] { display: none; }
