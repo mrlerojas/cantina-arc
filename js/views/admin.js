@@ -1,8 +1,15 @@
 import {
   q, db, currentUser, currentUnit, audit, ROLES, EXTRA_PERMS, MAX_ADICIONALES, exportUnit, importUnit, todayStr,
-  guardarUsuario, cambiarEstadoUsuario, guardarUnidad,
+  guardarUsuario, cambiarEstadoUsuario, guardarUnidad, esUnidadNube,
 } from '../store.js';
 import { esc, fdt, toast, modal, exportCSV, download, emptyRow, rangeBar, bindRange, periodo, attempt } from '../ui.js';
+import * as cloud from '../cloud.js';
+
+// En una unidad conectada a Supabase, usuarios y unidad se guardan en la nube (requiere conexión).
+const enNube = () => cloud.enabled && esUnidadNube();
+async function intentar(fn) {
+  try { return (await fn()) ?? true; } catch (e) { console.error(e); toast(e.message || String(e), true); return undefined; }
+}
 
 // ============================ USUARIOS ============================
 export function usuarios(_p, el) {
@@ -45,7 +52,7 @@ function userForm(u, done) {
       <label class="field"><span>Grado</span><input name="grado" value="${esc(u?.grado || '')}"></label>
       <label class="field"><span>Nombre</span><input name="nombre" required value="${esc(u?.nombre || '')}"></label>
       <label class="field"><span>Teléfono (usuario de acceso)</span><input name="telefono" type="tel" inputmode="numeric" required value="${esc(u?.telefono || '')}"></label>
-      <label class="field"><span>${u ? 'Nuevo PIN (dejar vacío para conservar)' : 'PIN inicial'}</span><input name="pin" type="password" inputmode="numeric" minlength="4" ${u ? '' : 'required'}></label>
+      <label class="field"><span>${enNube() ? (u ? 'Nueva contraseña (vacío = conservar)' : 'Contraseña inicial (mín. 6)') : (u ? 'Nuevo PIN (dejar vacío para conservar)' : 'PIN inicial')}</span><input name="pin" type="password" autocomplete="new-password" minlength="${enNube() ? 6 : 4}" ${u ? '' : 'required'}></label>
       <div class="full"><b class="small">Roles</b><div class="stack" style="margin-top:6px">
         ${Object.entries(ROLES).map(([k, l]) => `<label class="check"><input type="checkbox" name="rol" value="${k}" ${u?.roles.includes(k) ? 'checked' : ''} ${k === 'admin' && u?.id !== me.id && db.usuarios.some(x => x.unidad_id === un.id && x.roles.includes('admin') && x.id !== u?.id && x.activo !== false) ? 'disabled' : ''}> ${l}</label>`).join('')}
       </div></div>
@@ -56,18 +63,27 @@ function userForm(u, done) {
     foot: `${u && u.id !== me.id ? `<button class="danger" id="toggle">${u.activo === false ? 'Activar' : 'Desactivar'}</button><span class="spacer"></span>` : ''}
       <button data-close>Cancelar</button><button class="primary" id="ok">Guardar</button>`,
     onMount: (m, api) => {
-      m.querySelector('#toggle')?.addEventListener('click', () => {
-        if (!attempt(() => cambiarEstadoUsuario(u.id))) return;
+      let ocupado = false;
+      m.querySelector('#toggle')?.addEventListener('click', async () => {
+        if (ocupado) return; ocupado = true;
+        const ok = enNube() ? await intentar(() => cloud.cambiarEstadoUsuarioNube(u.id)) : attempt(() => cambiarEstadoUsuario(u.id));
+        ocupado = false;
+        if (!ok) return;
         api.close(); done();
       });
-      m.querySelector('#ok').onclick = () => {
+      m.querySelector('#ok').onclick = async () => {
         const f = m.querySelector('#uf');
-        if (!f.reportValidity()) return;
-        const ok = attempt(() => guardarUsuario(u?.id || null, {
-          grado: f.grado.value, nombre: f.nombre.value, telefono: f.telefono.value, pin: f.pin.value,
+        if (!f.reportValidity() || ocupado) return;
+        const data = {
+          grado: f.grado.value, nombre: f.nombre.value, telefono: f.telefono.value,
           roles: [...f.querySelectorAll('[name=rol]:checked')].map(x => x.value),
           permisos: [...f.querySelectorAll('[name=perm]:checked')].map(x => x.value),
-        }));
+        };
+        ocupado = true;
+        const ok = enNube()
+          ? await intentar(() => cloud.guardarUsuarioNube(u?.id || null, { ...data, password: f.pin.value }))
+          : attempt(() => guardarUsuario(u?.id || null, { ...data, pin: f.pin.value }));
+        ocupado = false;
         if (!ok) return;
         api.close(); toast('Usuario guardado'); done();
       };
@@ -89,10 +105,12 @@ export function unidad(_p, el) {
     </form>
     <div class="card" style="max-width:640px"><h3>Aislamiento de información</h3>
       <p class="small muted">Cada registro está asociado a la unidad (<code>unidad_id</code>) y los usuarios solo consultan los datos de su unidad. En la versión en la nube esta regla se aplica también en la base de datos (Row Level Security).</p></div>`;
-  el.querySelector('#f').onsubmit = e => {
+  el.querySelector('#f').onsubmit = async e => {
     e.preventDefault();
     const f = e.target;
-    if (!attempt(() => guardarUnidad({ nombre: f.nombre.value, modulos: { cantina: f.cantina.checked, coal: f.coal.checked } }))) return;
+    const datos = { nombre: f.nombre.value, modulos: { cantina: f.cantina.checked, coal: f.coal.checked } };
+    const ok = enNube() ? await intentar(() => cloud.guardarUnidadNube(datos)) : attempt(() => guardarUnidad(datos));
+    if (!ok) return;
     toast('Unidad actualizada');
     location.reload();
   };
