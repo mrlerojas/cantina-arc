@@ -412,7 +412,7 @@ export function tarifas() {
 export function guardarTarifas(t) {
   exigir('coal.operar', 'coal');
   const cur = q('coal_tarifas')[0];
-  if (cur) update('coal_tarifas', cur.id, t); else insert('coal_tarifas', t);
+  if (cur) update('coal_tarifas', cur.id, t); else insert('coal_tarifas', { ...t, id: `${currentUnit().id}:tarifas` });
   audit('Cambio de tarifas COAL', 'coal_tarifas', cur?.id || '', JSON.stringify({ completo: t.completo, medio: t.medio, militar: t.militar, civil: t.civil }));
 }
 
@@ -427,7 +427,8 @@ export function esFinDeSemana(fecha) {
 export function guardarDia(data) {
   exigir('coal.operar', 'coal');
   const cur = diaCoal(data.fecha);
-  const row = cur ? update('coal_dias', cur.id, data) : insert('coal_dias', data);
+  // Id fijo por fecha: si dos dispositivos registran el mismo día sin señal, queda un solo registro.
+  const row = cur ? update('coal_dias', cur.id, data) : insert('coal_dias', { ...data, id: `${currentUnit().id}:dia:${data.fecha}` });
   audit(cur ? 'Modificación personal alimentado' : 'Registro personal alimentado', 'coal_dias', row.id,
     `${data.fecha}: ${personasDia(row)} personas`);
   return row;
@@ -484,7 +485,7 @@ export function guardarMenu({ fecha, comida, descripcion, receta_id, porciones }
   exigir('coal.operar', 'coal');
   const cur = q('menus', m => m.fecha === fecha && m.comida === comida && m.estado === 'activo')[0];
   const data = { fecha, comida, descripcion, receta_id: receta_id || null, porciones: +porciones || 0 };
-  const row = cur ? update('menus', cur.id, data) : insert('menus', data);
+  const row = cur ? update('menus', cur.id, data) : insert('menus', { ...data, id: `${currentUnit().id}:menu:${fecha}:${comida}` });
   audit('Menú registrado', 'menus', row.id, `${fecha} ${COMIDAS[comida]}: ${descripcion}`);
   return row;
 }

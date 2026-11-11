@@ -77,12 +77,113 @@ function loadSession() {
 }
 
 export function save() {
-  try { localStorage.setItem(KEY, JSON.stringify(db)); }
-  catch (e) {
+  rastrear();
+  try {
+    localStorage.setItem(KEY, JSON.stringify(db));
+    if (seguimiento) localStorage.setItem(YKEY, JSON.stringify(sync));
+  } catch (e) {
     console.error(e);
     alert('No se pudo guardar: el almacenamiento del dispositivo está lleno. Reduzca fotografías o exporte un respaldo.');
   }
+  alGuardarFns.forEach(fn => fn());
 }
+
+// ---------- Sincronización con la nube: seguimiento de cambios ----------
+// Cada vez que se guarda, se compara cada registro con su última versión conocida ("sombra")
+// y los que cambiaron quedan pendientes de subir. cloud.js los sube y baja los de otros dispositivos.
+const YKEY = 'navlog_sync_v1';
+export const SYNC_TABLES = TABLES.filter(t => t !== 'unidades' && t !== 'usuarios');
+let seguimiento = false;
+let sync = loadSync(); // { dirty: { tabla: { id: 1 } }, cursor: { unidadId: { tabla: fecha } } }
+const sombra = {};
+const alGuardarFns = [];
+
+function loadSync() {
+  try {
+    const s = JSON.parse(localStorage.getItem(YKEY));
+    if (s && s.dirty && s.cursor) return s;
+  } catch { /* estado nuevo */ }
+  return { dirty: {}, cursor: {} };
+}
+
+export function activarSeguimiento() {
+  seguimiento = true;
+  SYNC_TABLES.forEach(t => { sombra[t] = new Map(db[t].map(r => [r.id, JSON.stringify(r)])); });
+}
+
+export function alGuardar(fn) { alGuardarFns.push(fn); }
+
+function rastrear() {
+  if (!seguimiento) return;
+  for (const t of SYNC_TABLES) {
+    const m = sombra[t];
+    for (const r of db[t]) {
+      if (!r || !r.id) continue;
+      const s = JSON.stringify(r);
+      if (m.get(r.id) !== s) { m.set(r.id, s); (sync.dirty[t] ||= {})[r.id] = 1; }
+    }
+  }
+}
+
+// Registros de la unidad pendientes de subir, por tabla.
+export function pendientes(un) {
+  return SYNC_TABLES
+    .map(t => ({ tabla: t, filas: db[t].filter(r => r.unidad_id === un && sync.dirty[t]?.[r.id]) }))
+    .filter(x => x.filas.length);
+}
+export function numPendientes(un) {
+  return pendientes(un).reduce((s, x) => s + x.filas.length, 0);
+}
+// Tras subir: deja de estar pendiente solo si el registro no cambió mientras se enviaba.
+export function marcarEnviadas(tabla, enviadas) {
+  enviadas.forEach(({ id, json }) => {
+    if (sombra[tabla].get(id) === json && sync.dirty[tabla]) delete sync.dirty[tabla][id];
+  });
+}
+export const cursorDe = (un, tabla) => sync.cursor[un]?.[tabla] || null;
+export function fijarCursor(un, tabla, fecha) { (sync.cursor[un] ||= {})[tabla] = fecha; }
+
+// Comparación que ignora el orden de las claves (la base de datos las reordena).
+const canon = v => JSON.stringify(v, (_k, x) =>
+  (x && typeof x === 'object' && !Array.isArray(x))
+    ? Object.keys(x).sort().reduce((o, k) => { o[k] = x[k]; return o; }, {})
+    : x);
+
+// Aplica registros bajados de la nube. Devuelve cuántos cambiaron algo aquí.
+// Un registro con cambios locales pendientes no se pisa: la versión local se subirá después.
+export function aplicarRemotas(tabla, filas) {
+  let cambios = 0;
+  const pos = new Map(db[tabla].map((r, i) => [r.id, i]));
+  for (const r of filas) {
+    if (!r || !r.id) continue;
+    if (sync.dirty[tabla]?.[r.id]) continue;
+    const i = pos.get(r.id);
+    const local = i === undefined ? null : db[tabla][i];
+    if (local && canon(local) === canon(r)) continue;
+    // Un consecutivo nunca retrocede: si aquí va más adelante, se conserva y se vuelve a subir.
+    if (tabla === 'secuencias' && local && (local.valor || 0) > (r.valor || 0)) {
+      (sync.dirty[tabla] ||= {})[r.id] = 1;
+      continue;
+    }
+    if (local) db[tabla][i] = r; else { db[tabla].push(r); pos.set(r.id, db[tabla].length - 1); }
+    sombra[tabla].set(r.id, JSON.stringify(r));
+    cambios++;
+  }
+  return cambios;
+}
+
+// Perfiles de la nube: la unidad y sus usuarios (sin contraseñas; las guarda Supabase).
+export function fijarPerfiles(unidad, usuarios) {
+  const u = { id: unidad.id, unidad_id: unidad.id, nombre: unidad.nombre, modulos: unidad.modulos, creado_en: unidad.creado_en, nube: true };
+  const i = db.unidades.findIndex(x => x.id === unidad.id);
+  if (i < 0) db.unidades.push(u); else db.unidades[i] = u;
+  db.usuarios = db.usuarios.filter(x => x.unidad_id !== unidad.id).concat(usuarios.map(x => ({
+    id: x.id, unidad_id: x.unidad_id, grado: x.grado, nombre: x.nombre, telefono: x.telefono,
+    roles: x.roles, permisos: x.permisos, activo: x.activo, creado_en: x.creado_en,
+  })));
+  save();
+}
+export const esUnidadNube = () => !!currentUnit()?.nube;
 
 export function isEmpty() { return db.unidades.length === 0; }
 
@@ -194,7 +295,7 @@ export function update(table, id, patch) {
 export function nextSeq(nombre) {
   const un = unitId();
   let s = db.secuencias.find(x => x.unidad_id === un && x.nombre === nombre);
-  if (!s) { s = { id: uid(), unidad_id: un, nombre, valor: 0 }; db.secuencias.push(s); }
+  if (!s) { s = { id: `${un}:seq:${nombre}`, unidad_id: un, nombre, valor: 0 }; db.secuencias.push(s); }
   s.valor += 1;
   return s.valor;
 }
@@ -309,8 +410,10 @@ export function importUnit(data) {
   exigirAdmin();
   const un = unitId();
   if (!data || data.unidad_id !== un) throw new Error('El respaldo pertenece a otra unidad.');
+  const nube = esUnidadNube();
   TABLES.forEach(t => {
     if (!Array.isArray(data[t])) return;
+    if (nube && (t === 'unidades' || t === 'usuarios')) return; // los administra Supabase
     db[t] = db[t].filter(r => (t === 'unidades' ? r.id !== un : r.unidad_id !== un)).concat(data[t]);
   });
   save();

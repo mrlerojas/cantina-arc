@@ -2,6 +2,7 @@
 import { currentUser, currentUnit, can, moduleOn, logout, isEmpty, ROLES } from './store.js';
 import { esc } from './ui.js';
 import { DEMO } from './config.js';
+import * as cloud from './cloud.js';
 import { renderLogin } from './views/login.js';
 import { renderDashboard } from './views/dashboard.js';
 import * as cantina from './views/cantina.js';
@@ -11,6 +12,7 @@ import * as admin from './views/admin.js';
 
 // Los datos de demostración solo se cargan en desarrollo (ver config.js y publicar.sh).
 if (DEMO && isEmpty()) (await import('./seed.js')).seed();
+cloud.iniciar();
 
 // ruta -> { título, vista, permiso, módulo }
 const ROUTES = {
@@ -108,6 +110,7 @@ function renderShell() {
         <header class="topbar">
           <button class="menu-btn icon-btn" id="menu" aria-label="Menú">☰</button>
           <h1 id="page-title"></h1>
+          <button class="sync-ind" id="sync-ind" hidden></button>
         </header>
         <div class="content" id="view"></div>
       </main>
@@ -116,7 +119,42 @@ function renderShell() {
   const shell = document.getElementById('shell');
   document.getElementById('menu').onclick = () => shell.classList.add('nav-open');
   document.getElementById('scrim').onclick = () => shell.classList.remove('nav-open');
+  document.getElementById('sync-ind').onclick = () => cloud.sincronizar();
+  pintarSync();
 }
+
+// Indicador de sincronización con la nube (solo en unidades conectadas a Supabase).
+const SYNC_TXT = {
+  ok: ['☁️ Sincronizado', ''],
+  sincronizando: ['🔄 Sincronizando…', ''],
+  'sin-conexion': ['📴 Sin conexión', 'warn'],
+  'sin-sesion': ['⚠️ Ingrese de nuevo para sincronizar', 'bad'],
+  rechazos: ['⚠️ Cambios rechazados', 'bad'],
+  error: ['⚠️ Error al sincronizar', 'bad'],
+};
+function pintarSync() {
+  const el = document.getElementById('sync-ind');
+  if (!el) return;
+  const e = cloud.estado;
+  const t = SYNC_TXT[e.fase];
+  el.hidden = !cloud.enabled || !t;
+  if (!t) return;
+  el.className = 'sync-ind ' + t[1];
+  el.textContent = t[0] + (e.pendientes ? ` · ${e.pendientes} por subir` : '');
+  el.title = e.detalle || 'Toque para sincronizar ahora';
+}
+window.addEventListener('navlog:sync', pintarSync);
+// Llegaron datos de otro dispositivo: se vuelve a dibujar la pantalla, salvo que haya
+// una ventana abierta o se esté escribiendo (se actualizará al cambiar de pantalla).
+window.addEventListener('navlog:datos', () => {
+  if (!currentUser()) return route();
+  if (document.getElementById('modal-root').children.length) return;
+  const a = document.activeElement;
+  if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return;
+  const y = window.scrollY;
+  route();
+  window.scrollTo(0, y);
+});
 
 export function route() {
   document.getElementById('modal-root').innerHTML = '';
