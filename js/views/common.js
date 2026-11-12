@@ -1,5 +1,7 @@
 // Vistas compartidas por CANTINA y COAL: productos, compras, gastos, inventario, proveedores.
-import { q, get, insert, update, can, todayStr, audit, userName } from '../store.js';
+import { q, get, insert, update, can, todayStr, audit, userName, esUnidadNube } from '../store.js';
+import * as cloud from '../cloud.js';
+import { LECTURA_FACTURAS } from '../config.js';
 import {
   precioVigente, historialPrecios, setPrecio, stock, costoPromedio, kardex, crearProducto, ajusteInventario,
   registrarCompra, anularCompra, registrarGasto, anularGasto, comparativoProveedores, productosModulo, validarProducto,
@@ -77,16 +79,21 @@ function productoForm(p, modulo, done, opts = {}) {
             <label class="btn" style="width:max-content">📷 Fotografía<input type="file" accept="image/*" capture="environment" id="file" hidden></label>
             <div class="row small">${EMOJIS.map(e => `<button type="button" class="ghost sm" data-emoji="${e}" style="font-size:20px;padding:2px 4px">${e}</button>`).join('')}</div>
           </div></div>` : ''}
-        <label class="field"><span>Nombre</span><input name="nombre" required value="${esc(p?.nombre || '')}"></label>
+        <label class="field"><span>Nombre</span><input name="nombre" required value="${esc(p?.nombre || opts.prefill?.nombre || '')}"></label>
         <label class="field"><span>Categoría</span><input name="categoria" list="cats" value="${esc(p?.categoria || '')}"><datalist id="cats">${cats.map(c => `<option value="${esc(c)}">`).join('')}</datalist></label>
-        <label class="field"><span>Unidad de medida</span><input name="unidad_medida" list="ums" required value="${esc(p?.unidad_medida || 'UND')}"><datalist id="ums">${UNIDADES_MEDIDA.map(u => `<option value="${u}">`).join('')}</datalist></label>
+        <label class="field"><span>Unidad de medida</span><input name="unidad_medida" list="ums" required value="${esc(p?.unidad_medida || opts.prefill?.unidad_medida || 'UND')}"><datalist id="ums">${UNIDADES_MEDIDA.map(u => `<option value="${u}">`).join('')}</datalist></label>
         <label class="field"><span>Stock mínimo (alerta)</span><input name="stock_min" type="number" step="any" min="0" value="${p?.stock_min ?? ''}"></label>
         ${modulo === 'cantina' ? `
           <div class="full"><h3 style="margin:6px 0 0">Precios ${p ? '<span class="small muted">(un cambio crea un nuevo registro de vigencia; las ventas anteriores conservan su precio)</span>' : ''}</h3></div>
-          <label class="field"><span>Precio de compra</span><input name="compra" type="number" min="0" value="${pv.compra ?? ''}"></label>
+          <label class="field"><span>Precio de compra</span><input name="compra" type="number" min="0" value="${pv.compra ?? opts.prefill?.compra ?? ''}"></label>
+          <label class="field"><span>Vigente desde</span><input name="desde" type="date" value="${todayStr()}"></label>
+          <p class="small muted full" style="margin:0">Escriba el <b>% de ganancia</b> sobre el precio de compra y se calcula el precio de venta, o escriba el precio de venta y se calcula el %.</p>
+          <label class="field"><span>% ganancia tripulación</span><input name="pct_tripulacion" type="number" step="any" inputmode="decimal" placeholder="Ej.: 30"></label>
           <label class="field"><span>Precio tripulación</span><input name="tripulacion" type="number" min="0" required value="${pv.tripulacion ?? ''}"></label>
+          <div class="small full ganancia" data-gan="tripulacion"></div>
+          <label class="field"><span>% ganancia externo</span><input name="pct_externo" type="number" step="any" inputmode="decimal" placeholder="Ej.: 50"></label>
           <label class="field"><span>Precio externo</span><input name="externo" type="number" min="0" required value="${pv.externo ?? ''}"></label>
-          <label class="field"><span>Vigente desde</span><input name="desde" type="date" value="${todayStr()}"></label>` : ''}
+          <div class="small full ganancia" data-gan="externo"></div>` : ''}
         ${opts.enCompra ? '<p class="small muted full" style="margin:0">La cantidad y el costo se indican en la compra; no hace falta inventario inicial.</p>' : ''}
         ${!p && !opts.enCompra ? `
           <div class="full"><h3 style="margin:6px 0 0">Inventario inicial</h3></div>
@@ -108,6 +115,34 @@ function productoForm(p, modulo, done, opts = {}) {
         const f = e.target.files[0]; if (!f) return;
         foto = await readImage(f); paint();
       });
+      // % de ganancia <-> precio de venta. El % es sobre el precio de compra:
+      // precio de venta = compra × (1 + % / 100). Solo el precio se guarda; el % se calcula.
+      if (modulo === 'cantina') {
+        const pf = m.querySelector('#pf');
+        const r1 = n => Math.round(n * 10) / 10;
+        const pares = ['tripulacion', 'externo'].map(k => {
+          const pct = pf['pct_' + k], precio = pf[k], info = m.querySelector(`[data-gan="${k}"]`);
+          const costo = () => +pf.compra.value || 0;
+          const pintar = () => {
+            const c = costo(), v = +precio.value || 0;
+            if (!(c > 0)) { info.className = 'small full ganancia muted'; info.textContent = precio.value !== '' ? 'Indique el precio de compra para calcular la ganancia.' : ''; return; }
+            if (precio.value === '') { info.textContent = ''; return; }
+            info.className = 'small full ganancia ' + (v > c ? 'pos' : 'neg');
+            info.textContent = v > c
+              ? `Ganancia: ${money(v - c)} por unidad · margen ${r1(((v - c) / v) * 100).toLocaleString('es-CO')} % del precio de venta.`
+              : v === c ? 'Sin ganancia: se vende al precio de compra.' : `Pérdida: ${money(c - v)} por unidad (se vende por debajo del precio de compra).`;
+          };
+          const desdePrecio = () => { const c = costo(); pct.value = c > 0 && precio.value !== '' ? String(r1(((+precio.value || 0) / c - 1) * 100)) : ''; pintar(); };
+          const desdePct = () => { const c = costo(); if (c > 0 && pct.value !== '') precio.value = String(Math.round(c * (1 + (+pct.value || 0) / 100))); pintar(); };
+          pct.addEventListener('input', desdePct);
+          precio.addEventListener('input', desdePrecio);
+          desdePrecio();
+          return { pct, precio, desdePrecio, desdePct };
+        });
+        // Al cambiar el precio de compra: si ya hay precio de venta se conserva y se recalcula el %;
+        // si solo se había escrito el %, se calcula el precio.
+        pf.compra.addEventListener('input', () => pares.forEach(x => (x.precio.value === '' && x.pct.value !== '' ? x.desdePct() : x.desdePrecio())));
+      }
       if (!opera) m.querySelectorAll('#pf input').forEach(i => i.disabled = true);
       m.querySelector('#toggle')?.addEventListener('click', () => {
         if (!opera) return toast('No tiene permiso para realizar esta acción.', true);
@@ -214,6 +249,10 @@ function compraForm(modulo, done) {
         <label class="field"><span>Proveedor</span><div class="row"><select id="prov" style="flex:1"><option value="">Sin proveedor</option>${provs.map(p => `<option value="${p.id}">${esc(p.nombre)}</option>`).join('')}</select><button type="button" id="np">+</button></div></label>
         <label class="field full"><span>Factura / documento soporte</span><input id="doc"></label>
       </div>
+      ${LECTURA_FACTURAS && cloud.enabled && esUnidadNube() ? `<div class="factura-caja">
+        <label class="btn" id="btn-factura">📷 Leer factura con foto<input type="file" accept="image/*" id="foto-factura" hidden></label>
+        <span class="small muted" id="cupo-factura"></span></div>
+      <div id="lectura"></div>` : ''}
       <h3 style="margin:14px 0 6px">Productos</h3>
       <div id="lines"></div>
       <p class="small muted">La compra genera automáticamente la entrada al inventario (Kardex).</p>`,
@@ -222,13 +261,110 @@ function compraForm(modulo, done) {
       const prov = m.querySelector('#prov');
       editor = lineEditor(m.querySelector('#lines'), {
         productos: productosModulo(modulo),
+        onChange: () => compararTotal(),
         cols: {
           precio: 'Precio unitario', defaultPrecio: pid => ultimoPrecio(pid, prov.value),
           // Producto que aún no existe: se crea aquí mismo y queda agregado a la compra.
           crear: () => productoForm(null, modulo, (np, costo) => { if (np) editor.agregar(np, costo); }, { enCompra: true }),
         },
       });
-      m.querySelector('#np').onclick = () => proveedorForm(null, p => { prov.insertAdjacentHTML('beforeend', `<option value="${p.id}">${esc(p.nombre)}</option>`); prov.value = p.id; });
+      const nuevoProveedor = pre => proveedorForm(null, p => { prov.insertAdjacentHTML('beforeend', `<option value="${p.id}">${esc(p.nombre)}</option>`); prov.value = p.id; }, pre);
+      m.querySelector('#np').onclick = () => nuevoProveedor();
+
+      // ---- Lectura de la factura con foto: llena el formulario para revisar; no guarda nada ----
+      const zona = m.querySelector('#lectura');
+      let lectura = null;      // { total, observaciones, proveedor, pendientes: [renglones sin producto] }
+      const norm = s => String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+      function compararTotal() {
+        const el = zona?.querySelector('#lec-total');
+        if (!el || !lectura || lectura.total == null) return;
+        const dif = Math.round(editor.total() - lectura.total);
+        const falta = lectura.pendientes.length;
+        el.className = 'small ' + (dif === 0 && !falta ? 'pos' : 'neg');
+        el.textContent = dif === 0 && !falta ? '✔ El total del formulario coincide con el de la factura.'
+          : `Total del formulario ${money(editor.total())}: ${dif === 0 ? 'coincide, pero faltan renglones por asociar' : (dif > 0 ? 'sobran ' : 'faltan ') + money(Math.abs(dif)) + ' frente a la factura'}.`;
+      }
+      const pintarCupo = async () => {
+        const el = m.querySelector('#cupo-factura');
+        if (!el) return;
+        const c = await cloud.cupoFacturas();
+        if (c && el.isConnected) el.textContent = `Lecturas usadas: ${c.usados} de ${c.tope} en los últimos ${c.dias} días.`;
+      };
+      const pintarLectura = () => {
+        if (!zona || !lectura) return;
+        const prods = productosModulo(modulo);
+        zona.innerHTML = `<div class="lectura">
+          <div class="row"><b>Factura leída: revise antes de registrar</b><span class="spacer"></span><button class="ghost sm" id="lec-cerrar" title="Ocultar">✕</button></div>
+          <div class="small">${lectura.total != null ? `Total que dice la factura: <b>${money(lectura.total)}</b>. ` : 'La factura no muestra un total legible. '}<span id="lec-total"></span></div>
+          ${lectura.proveedor ? `<div class="small">Proveedor leído: <b>${esc(lectura.proveedor)}</b> — no está en su lista. <button class="sm" id="lec-prov">Crear proveedor</button></div>` : ''}
+          ${lectura.observaciones ? `<div class="small muted">Nota de la lectura: ${esc(lectura.observaciones)}</div>` : ''}
+          ${lectura.pendientes.length ? `<div class="small" style="margin-top:6px"><b>${lectura.pendientes.length} renglón(es) sin producto asociado.</b> Elija el producto que corresponde o créelo:</div>
+            <div class="table-wrap"><table class="lines"><thead><tr><th>En la factura</th><th class="num">Cant.</th><th class="num">Precio unit.</th><th>Producto</th><th></th></tr></thead>
+            <tbody>${lectura.pendientes.map((it, i) => `<tr><td>${esc(it.descripcion)}${it.unidad ? ` <span class="small muted">${esc(it.unidad)}</span>` : ''}</td>
+              <td class="num">${qty(it.cantidad)}</td><td class="num">${it.precio_unitario != null ? money(it.precio_unitario) : '—'}</td>
+              <td><select data-asociar="${i}"><option value="">Elegir…</option>${prods.map(p => `<option value="${p.id}">${esc(p.nombre)} (${esc(p.unidad_medida)})</option>`).join('')}</select></td>
+              <td style="white-space:nowrap"><button class="sm" data-crear-lec="${i}">✚ Crear</button> <button class="ghost sm" data-omitir="${i}" title="No incluir este renglón">Omitir</button></td></tr>`).join('')}</tbody></table></div>` : ''}
+        </div>`;
+        zona.querySelector('#lec-cerrar').onclick = () => { lectura = null; zona.innerHTML = ''; };
+        zona.querySelector('#lec-prov')?.addEventListener('click', () => nuevoProveedor({ nombre: lectura.proveedor }));
+        const resolver = (i, p) => {
+          const it = lectura.pendientes[i];
+          editor.agregar(p, it.precio_unitario ?? '', it.cantidad);
+          lectura.pendientes.splice(i, 1);
+          pintarLectura();
+        };
+        zona.querySelectorAll('[data-asociar]').forEach(sel => sel.onchange = () => { const p = get('productos', sel.value); if (p) resolver(+sel.dataset.asociar, p); });
+        zona.querySelectorAll('[data-crear-lec]').forEach(b => b.onclick = () => {
+          const i = +b.dataset.crearLec, it = lectura.pendientes[i];
+          productoForm(null, modulo, np => { if (np) resolver(lectura.pendientes.indexOf(it), np); },
+            { enCompra: true, prefill: { nombre: it.descripcion, unidad_medida: (it.unidad || '').toUpperCase() || undefined, compra: it.precio_unitario ?? undefined } });
+        });
+        zona.querySelectorAll('[data-omitir]').forEach(b => b.onclick = () => { lectura.pendientes.splice(+b.dataset.omitir, 1); pintarLectura(); });
+        compararTotal();
+      };
+      const aplicarLectura = r => {
+        const f = r.factura;
+        if (!f.es_factura || !f.items.length) {
+          lectura = null;
+          zona.innerHTML = `<div class="lectura"><b>No se reconoció una factura en la foto.</b><div class="small muted">${esc(f.observaciones || 'Pruebe con una foto más clara, completa y bien iluminada, o registre la compra a mano.')}</div></div>`;
+          return;
+        }
+        if (/^\d{4}-\d{2}-\d{2}$/.test(f.fecha || '') && f.fecha <= todayStr()) m.querySelector('#fecha').value = f.fecha;
+        if (f.numero) m.querySelector('#doc').value = f.numero;
+        let provNuevo = null;
+        if (f.proveedor) {
+          const n = norm(f.proveedor);
+          const hit = provs.find(p => norm(p.nombre) === n) || provs.find(p => n && (norm(p.nombre).includes(n) || n.includes(norm(p.nombre))));
+          if (hit) prov.value = hit.id; else provNuevo = f.proveedor;
+        }
+        const asociados = f.items.filter(i => i.producto_id && get('productos', i.producto_id));
+        const filas = asociados.map(i => ({ producto_id: i.producto_id, cantidad: i.cantidad, precio: i.precio_unitario ?? '', origen: 'convencional' }));
+        editor.set([...editor.get(), ...filas].length ? [...editor.get(), ...filas] : [{ producto_id: '', cantidad: '', precio: '', origen: 'convencional' }]);
+        lectura = { total: f.total, observaciones: f.observaciones, proveedor: provNuevo, pendientes: f.items.filter(i => !asociados.includes(i)) };
+        pintarLectura();
+        toast(`Factura leída: ${asociados.length} renglón(es) asociados${lectura.pendientes.length ? ` y ${lectura.pendientes.length} por revisar` : ''}.`);
+      };
+      const foto = m.querySelector('#foto-factura');
+      if (foto) {
+        pintarCupo();
+        const boton = m.querySelector('#btn-factura');
+        foto.onchange = async e => {
+          const file = e.target.files[0];
+          e.target.value = '';
+          if (!file || boton.classList.contains('ocupado')) return;
+          boton.classList.add('ocupado');
+          const texto = boton.firstChild; const antes = texto.textContent; texto.textContent = '⏳ Leyendo la factura… ';
+          try {
+            const dataUrl = await readImage(file, 1600);
+            const r = await cloud.leerFactura({
+              modulo, tipo: 'image/jpeg', imagen: dataUrl.split(',')[1],
+              productos: productosModulo(modulo).map(p => ({ id: p.id, nombre: p.nombre, unidad: p.unidad_medida })),
+            });
+            aplicarLectura(r);
+          } catch (err) { console.error(err); toast(err.message || 'No se pudo leer la factura.', true); }
+          finally { texto.textContent = antes; boton.classList.remove('ocupado'); pintarCupo(); }
+        };
+      }
       m.querySelector('#ok').onclick = () => {
         const c = attempt(() => registrarCompra({ modulo, proveedor_id: prov.value || null, fecha: m.querySelector('#fecha').value, documento: m.querySelector('#doc').value, items: editor.get() }));
         if (c) { api.close(); toast(`Compra #${c.numero} registrada; inventario actualizado`); done(); }
@@ -368,11 +504,12 @@ function kardexModal(pid, modulo, done) {
 }
 
 // ============================ PROVEEDORES ============================
-export function proveedorForm(p, done) {
+// pre: valores sugeridos para un proveedor nuevo (por ejemplo, el nombre leído de una factura).
+export function proveedorForm(p, done, pre = {}) {
   modal({
     title: p ? 'Editar proveedor' : 'Nuevo proveedor',
     body: `<form id="pf" class="form-grid">
-      <label class="field full"><span>Nombre / razón social</span><input name="nombre" required value="${esc(p?.nombre || '')}"></label>
+      <label class="field full"><span>Nombre / razón social</span><input name="nombre" required value="${esc(p?.nombre || pre.nombre || '')}"></label>
       <label class="field"><span>Contacto</span><input name="contacto" value="${esc(p?.contacto || '')}"></label>
       <label class="field"><span>Teléfono</span><input name="telefono" type="tel" value="${esc(p?.telefono || '')}"></label>
       <label class="field full"><span>Productos que suministra / notas</span><textarea name="notas">${esc(p?.notas || '')}</textarea></label>
