@@ -97,9 +97,10 @@ async function recordarAcceso(tel, pass, userId) {
 async function traerPerfiles(userId, token) {
   token ||= await tokenDe(userId);
   if (!token) throw new Error('La sesión venció. Ingrese de nuevo con conexión.');
-  const [usuarios, unidades] = await Promise.all([
+  const [usuarios, unidades, propietario] = await Promise.all([
     http('/rest/v1/usuarios?select=*&order=creado_en.asc', { token }),
     http('/rest/v1/unidades?select=*', { token }),
+    http('/rest/v1/rpc/soy_propietario', { method: 'POST', token, body: {} }).catch(e => { if (e instanceof SinConexion) throw e; return false; }),
   ]);
   // La base solo devuelve la unidad propia, y nada si el usuario está inactivo.
   if (!unidades.length || !usuarios.some(u => u.id === userId)) {
@@ -108,7 +109,14 @@ async function traerPerfiles(userId, token) {
     throw new Error('Este usuario está inactivo. Consulte al administrador de la unidad.');
   }
   S.fijarPerfiles(unidades[0], usuarios);
+  if (!!st.propietario?.[userId] !== !!propietario) { (st.propietario ||= {})[userId] = !!propietario; persistir(); }
 }
+
+// ¿Quien ingresó es el propietario del sistema? (ve el panel de licencias)
+export const esPropietario = () => enabled && !!st.propietario?.[S.currentUser()?.id];
+
+// Panel del propietario: accion = listar | crear_codigo | anular_codigo | actualizar
+export const licencias = (accion, datos = {}) => funcion('licencias', { accion, ...datos });
 
 // ---------- Ingreso ----------
 // Devuelve el usuario, null si las credenciales no son válidas, o lanza un error con el motivo.
@@ -177,8 +185,12 @@ async function correr() {
   const rechazos = [];
   let cambios = 0;
   try {
+    // Perfiles: usuarios, módulos y licencia de la unidad. Si cambian, se redibuja la pantalla.
+    const huella = () => JSON.stringify([S.currentUnit(), S.db.usuarios.filter(x => x.unidad_id === un), esPropietario()]);
+    const antes = huella();
     guardandoInterno = true; // guardar los perfiles no debe programar otra sincronización
     try { await traerPerfiles(u.id, token); } finally { guardandoInterno = false; }
+    if (huella() !== antes) cambios++;
 
     // 1. Subir los cambios hechos en este dispositivo
     for (const { tabla, filas } of S.pendientes(un)) {

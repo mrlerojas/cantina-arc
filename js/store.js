@@ -174,7 +174,10 @@ export function aplicarRemotas(tabla, filas) {
 
 // Perfiles de la nube: la unidad y sus usuarios (sin contraseñas; las guarda Supabase).
 export function fijarPerfiles(unidad, usuarios) {
-  const u = { id: unidad.id, unidad_id: unidad.id, nombre: unidad.nombre, modulos: unidad.modulos, creado_en: unidad.creado_en, nube: true };
+  const u = {
+    id: unidad.id, unidad_id: unidad.id, nombre: unidad.nombre, modulos: unidad.modulos, creado_en: unidad.creado_en, nube: true,
+    licencia: { modulos: unidad.licencia_modulos || { cantina: true, coal: true }, vence: unidad.licencia_vence || null, estado: unidad.licencia_estado || 'activa' },
+  };
   const i = db.unidades.findIndex(x => x.id === unidad.id);
   if (i < 0) db.unidades.push(u); else db.unidades[i] = u;
   db.usuarios = db.usuarios.filter(x => x.unidad_id !== unidad.id).concat(usuarios.map(x => ({
@@ -235,7 +238,22 @@ export function perms(u = currentUser()) {
   return s;
 }
 
+// ---------- Licencia de la unidad ----------
+// La fija el propietario del sistema en Supabase. Se evalúa también sin conexión, con la fecha
+// guardada. Vencida o suspendida, la unidad queda en solo consulta. Las unidades que no están
+// en la nube (modo demostración) no tienen licencia.
+export function licencia() {
+  const l = currentUnit()?.licencia;
+  if (!l) return { aplica: false, vigente: true, modulos: { cantina: true, coal: true }, vence: null, estado: 'activa', dias: null };
+  const hoy = todayStr();
+  const dias = l.vence ? Math.round((new Date(l.vence + 'T00:00:00') - new Date(hoy + 'T00:00:00')) / 86400000) : null;
+  const vigente = l.estado === 'activa' && (dias === null || dias >= 0);
+  return { aplica: true, vigente, modulos: l.modulos || {}, vence: l.vence, estado: l.estado, dias };
+}
+const PERMISOS_DE_ESCRITURA = new Set(['cantina.operar', 'coal.operar', 'anular', 'ajustes']);
+
 export function can(p, u = currentUser()) {
+  if (PERMISOS_DE_ESCRITURA.has(p) && !licencia().vigente) return false; // solo consulta
   const s = perms(u);
   if (s.has('*')) return true;
   if (s.has(p)) return true;
@@ -246,7 +264,7 @@ export function can(p, u = currentUser()) {
 
 export function moduleOn(m) {
   const un = currentUnit();
-  return !!(un && un.modulos && un.modulos[m]);
+  return !!(un && un.modulos && un.modulos[m] && licencia().modulos[m]);
 }
 
 // ---------- Acceso a datos (siempre filtrado por unidad) ----------

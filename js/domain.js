@@ -1,11 +1,12 @@
 // Reglas de negocio: inventario (Kardex), CANTINA y COAL.
 import {
-  q, get, insert, update, save, audit, nextSeq, currentUser, currentUnit, todayStr, addDays, can, moduleOn,
+  q, get, insert, update, save, audit, nextSeq, currentUser, currentUnit, todayStr, addDays, can, moduleOn, licencia,
 } from './store.js';
 
 // Las reglas validan permisos por sí mismas (no dependen de que la pantalla oculte el botón).
 // Es el mismo contrato que deberán aplicar las políticas de Supabase.
 function exigir(permiso, modulo) {
+  if (!licencia().vigente) throw new Error('La licencia de la unidad está vencida o suspendida: solo se puede consultar.');
   if (modulo && !moduleOn(modulo)) throw new Error(`El módulo ${modulo.toUpperCase()} no está habilitado en esta unidad.`);
   if (!can(permiso)) throw new Error('No tiene permiso para realizar esta acción.');
 }

@@ -1,5 +1,5 @@
 // Arranque, enrutador por hash y estructura de navegación.
-import { currentUser, currentUnit, can, moduleOn, logout, isEmpty, ROLES } from './store.js';
+import { currentUser, currentUnit, can, moduleOn, logout, isEmpty, ROLES, licencia } from './store.js';
 import { esc } from './ui.js';
 import { DEMO } from './config.js';
 import * as cloud from './cloud.js';
@@ -9,6 +9,7 @@ import * as cantina from './views/cantina.js';
 import * as common from './views/common.js';
 import * as coal from './views/coal.js';
 import * as admin from './views/admin.js';
+import { licencias as vistaLicencias } from './views/licencias.js';
 
 // Los datos de demostración solo se cargan en desarrollo (ver config.js y publicar.sh).
 if (DEMO && isEmpty()) (await import('./seed.js')).seed();
@@ -40,6 +41,7 @@ const ROUTES = {
   'admin/unidad': { t: 'Unidad y módulos', v: admin.unidad, p: 'admin' },
   'admin/auditoria': { t: 'Auditoría', v: admin.auditoria, p: 'auditoria' },
   'admin/respaldo': { t: 'Respaldo de datos', v: admin.respaldo, p: 'admin' },
+  'propietario/licencias': { t: 'Licencias de unidades', v: vistaLicencias, p: 'propietario' },
 };
 
 const NAV = [
@@ -60,12 +62,14 @@ const NAV = [
     ['admin/usuarios', '🔐', 'Usuarios y permisos'], ['admin/unidad', '🚢', 'Unidad y módulos'],
     ['admin/auditoria', '🕵️', 'Auditoría'], ['admin/respaldo', '💾', 'Respaldo'],
   ] },
+  { g: 'PROPIETARIO', items: [['propietario/licencias', '🔑', 'Licencias']] },
 ];
 
 function allowed(r) {
   if (!r) return false;
   if (r.m && !moduleOn(r.m)) return false;
   if (!r.p) return true;
+  if (r.p === 'propietario') return cloud.esPropietario();
   // Los balances de un módulo solo los ve quien tiene acceso a ese módulo.
   if (r.p === 'balances' && r.m && !can(r.m + '.ver')) return false;
   if (r.p === 'any.operar') return can('cantina.operar') || can('coal.operar') || can('balances');
@@ -96,7 +100,7 @@ function renderShell() {
   document.getElementById('app').innerHTML = `
     <div class="shell" id="shell">
       <aside class="sidebar">
-        <div class="brand"><img src="icons/icon-192.png" alt=""><div><b>Cantina ARC</b><small>Gestión para Unidades Navales</small></div></div>
+        <div class="brand"><img src="icons/icon-192.png" alt=""><div><b>CANTINA</b><small>Gestión para Unidades Navales</small></div></div>
         <div class="unit-pill">🚢 ${esc(un.nombre)}</div>
         ${nav}
         <div class="sidebar-foot">
@@ -112,6 +116,7 @@ function renderShell() {
           <h1 id="page-title"></h1>
           <button class="sync-ind" id="sync-ind" hidden></button>
         </header>
+        ${avisoLicencia()}
         <div class="content" id="view"></div>
       </main>
     </div>`;
@@ -121,6 +126,17 @@ function renderShell() {
   document.getElementById('scrim').onclick = () => shell.classList.remove('nav-open');
   document.getElementById('sync-ind').onclick = () => cloud.sincronizar();
   pintarSync();
+}
+
+// Aviso de licencia: vencida/suspendida (solo consulta) o por vencer en 15 días o menos.
+function avisoLicencia() {
+  const l = licencia();
+  if (!l.aplica) return '';
+  const f = l.vence ? l.vence.split('-').reverse().join('/') : '';
+  if (l.estado !== 'activa') return '<div class="lic-aviso bad">🔒 Licencia suspendida: la unidad está en solo consulta. Comuníquese con el proveedor.</div>';
+  if (!l.vigente) return `<div class="lic-aviso bad">🔒 La licencia venció el ${f}: la unidad está en solo consulta. Renueve para volver a registrar.</div>`;
+  if (l.dias !== null && l.dias <= 15) return `<div class="lic-aviso warn">⏳ La licencia vence el ${f} (${l.dias === 0 ? 'hoy' : l.dias === 1 ? 'mañana' : 'en ' + l.dias + ' días'}).</div>`;
+  return '';
 }
 
 // Indicador de sincronización con la nube (solo en unidades conectadas a Supabase).
@@ -165,7 +181,7 @@ export function route() {
   const view = document.getElementById('view');
   if (!allowed(r)) r = ROUTES[''];
   document.getElementById('page-title').textContent = r.t;
-  document.title = r.t === 'Inicio' ? 'Cantina ARC' : `${r.t} · Cantina ARC`;
+  document.title = r.t === 'Inicio' ? 'CANTINA' : `${r.t} · CANTINA`;
   r.v(params, view);
   window.scrollTo(0, 0);
 }
