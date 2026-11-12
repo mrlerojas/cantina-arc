@@ -7,7 +7,7 @@ export function renderLogin(root, done) {
   root.innerHTML = `
     <div class="login">
       <form class="box" id="f" autocomplete="on">
-        <div class="logo"><img src="icons/icon-192.png" alt=""><div><b>Cantina ARC</b><div class="small muted">Gestión para Unidades Navales</div></div></div>
+        <div class="logo"><img src="icons/icon-192.png" alt=""><div><b>CANTINA</b><div class="small muted">Gestión para Unidades Navales</div></div></div>
         <label class="field"><span>Número telefónico</span>
           <input name="tel" type="tel" inputmode="numeric" autocomplete="username" placeholder="3001234567" required></label>
         <label class="field" style="margin-top:12px"><span>${cloud.enabled ? 'Contraseña' : 'PIN / contraseña'}</span>

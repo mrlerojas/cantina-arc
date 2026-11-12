@@ -1,6 +1,6 @@
 import {
   q, db, currentUser, currentUnit, audit, ROLES, EXTRA_PERMS, MAX_ADICIONALES, exportUnit, importUnit, todayStr,
-  guardarUsuario, cambiarEstadoUsuario, guardarUnidad, esUnidadNube,
+  guardarUsuario, cambiarEstadoUsuario, guardarUnidad, esUnidadNube, licencia,
 } from '../store.js';
 import { esc, fdt, toast, modal, exportCSV, download, emptyRow, rangeBar, bindRange, periodo, attempt } from '../ui.js';
 import * as cloud from '../cloud.js';
@@ -94,15 +94,22 @@ function userForm(u, done) {
 // ============================ UNIDAD ============================
 export function unidad(_p, el) {
   const un = currentUnit();
+  const lic = licencia();
+  const noLic = m => lic.aplica && !lic.modulos[m];
+  const licTxt = !lic.aplica ? '' : `<div class="card" style="max-width:640px"><h3>Licencia</h3>
+    <p class="small">Módulos contratados: <b>${['cantina', 'coal'].filter(m => lic.modulos[m]).map(m => m.toUpperCase()).join(' y ') || 'ninguno'}</b><br>
+    Estado: <b>${lic.estado !== 'activa' ? 'Suspendida' : lic.vigente ? 'Activa' : 'Vencida'}</b>${lic.vence ? ` · Vence el <b>${lic.vence.split('-').reverse().join('/')}</b>` : ' · Sin fecha de vencimiento'}</p>
+    <p class="small muted">Para contratar otro módulo o renovar, comuníquese con el proveedor del sistema.</p></div>`;
   el.innerHTML = `
     <form id="f" class="card stack" style="max-width:640px">
       <label class="field"><span>Nombre de la unidad (aparece en recibos y documentos)</span><input name="nombre" required value="${esc(un.nombre)}"></label>
       <div><b class="small">Módulos habilitados</b><div class="stack" style="margin-top:6px">
-        <label class="check"><input type="checkbox" name="cantina" ${un.modulos?.cantina ? 'checked' : ''}> CANTINA — POS, inventario, clientes, créditos, balance</label>
-        <label class="check"><input type="checkbox" name="coal" ${un.modulos?.coal ? 'checked' : ''}> COAL — alimentación, recetas, víveres, parte diario, balance</label>
+        <label class="check"><input type="checkbox" name="cantina" ${un.modulos?.cantina && !noLic('cantina') ? 'checked' : ''} ${noLic('cantina') ? 'disabled' : ''}> CANTINA — POS, inventario, clientes, créditos, balance${noLic('cantina') ? ' <span class="badge">No contratado</span>' : ''}</label>
+        <label class="check"><input type="checkbox" name="coal" ${un.modulos?.coal && !noLic('coal') ? 'checked' : ''} ${noLic('coal') ? 'disabled' : ''}> COAL — alimentación, recetas, víveres, parte diario, balance${noLic('coal') ? ' <span class="badge">No contratado</span>' : ''}</label>
       </div><p class="small muted">Desactivar un módulo lo oculta; la información se conserva.</p></div>
       <div class="row end"><button class="primary">Guardar</button></div>
     </form>
+    ${licTxt}
     <div class="card" style="max-width:640px"><h3>Aislamiento de información</h3>
       <p class="small muted">Cada registro está asociado a la unidad (<code>unidad_id</code>) y los usuarios solo consultan los datos de su unidad. En la versión en la nube esta regla se aplica también en la base de datos (Row Level Security).</p></div>`;
   el.querySelector('#f').onsubmit = async e => {
@@ -156,7 +163,7 @@ export function respaldo(_p, el) {
   el.querySelector('#exp').onclick = () => {
     const data = attempt(() => exportUnit());
     if (!data) return;
-    download(`cantina_arc_respaldo_${currentUnit().nombre.replace(/\W+/g, '_')}_${todayStr()}.json`, JSON.stringify(data), 'application/json');
+    download(`cantina_respaldo_${currentUnit().nombre.replace(/\W+/g, '_')}_${todayStr()}.json`, JSON.stringify(data), 'application/json');
     audit('Respaldo descargado', 'unidades', currentUnit().id);
   };
   el.querySelector('#imp').onchange = async e => {
