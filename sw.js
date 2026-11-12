@@ -1,10 +1,10 @@
 // Service worker: caché del shell para uso sin conexión (a bordo sin señal).
-const CACHE = 'navlog-20261111-1528';
+const CACHE = 'navlog-20261111-2049';
 const ASSETS = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',
   'js/app.js', 'js/store.js', 'js/domain.js', 'js/ui.js', 'js/config.js', 'js/cloud.js',
   'js/views/login.js', 'js/views/dashboard.js', 'js/views/cantina.js',
-  'js/views/common.js', 'js/views/coal.js', 'js/views/admin.js',
+  'js/views/common.js', 'js/views/coal.js', 'js/views/admin.js', 'js/views/licencias.js',
   'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'
 ];
 self.addEventListener('install', e => {
