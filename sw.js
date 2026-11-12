@@ -1,5 +1,5 @@
 // Service worker: caché del shell para uso sin conexión (a bordo sin señal).
-const CACHE = 'navlog-20261112-0918';
+const CACHE = 'navlog-20261112-1413';
 const ASSETS = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',
   'js/app.js', 'js/store.js', 'js/domain.js', 'js/ui.js', 'js/config.js', 'js/cloud.js',
