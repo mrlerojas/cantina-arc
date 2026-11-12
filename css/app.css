@@ -1,4 +1,4 @@
-/* Cantina ARC — estilos. Paleta institucional: blanco, azul turquí, negro. */
+/* CANTINA — estilos. Paleta institucional: blanco, azul turquí, negro. */
 :root {
   --navy: #14264a;
   --navy-2: #1e3766;
@@ -295,3 +295,11 @@ tr.clickable:hover td { background: #f8f9fb; }
 .sync-ind.warn { background: #fff4d6; color: #7a5200; }
 .sync-ind.bad { background: #fde3e1; color: #a1271f; }
 .sync-ind[hidden] { display: none; }
+
+/* ---------- Aviso de licencia ---------- */
+.lic-aviso { padding: 9px 24px; font-size: 13px; font-weight: 600; }
+.lic-aviso.warn { background: #fff4d6; color: #7a5200; }
+.lic-aviso.bad { background: #fde3e1; color: #a1271f; }
+@media (max-width: 900px) { .lic-aviso { padding: 9px 16px; } }
+.codigo-grande { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 26px; font-weight: 700; letter-spacing: .12em;
+  text-align: center; padding: 14px; background: var(--navy-soft); border-radius: 12px; user-select: all; }
