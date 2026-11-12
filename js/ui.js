@@ -197,18 +197,19 @@ export function lineEditor(container, { productos, rows = [], cols = {}, onChang
   render();
   // Añade a la lista un producto recién creado y lo deja seleccionado en una fila
   // (la primera que esté vacía, o una nueva).
-  const agregar = (p, precio = '') => {
+  const agregar = (p, precio = '', cantidad = '') => {
     if (!productos.some(x => x.id === p.id)) { productos.push(p); productos.sort((a, b) => a.nombre.localeCompare(b.nombre)); }
     let fila = state.find(r => !r.producto_id);
     if (!fila) { fila = { producto_id: '', cantidad: '', precio: '', origen: 'convencional' }; state.push(fila); }
     fila.producto_id = p.id;
     if (precio) fila.precio = precio;
+    if (cantidad) fila.cantidad = cantidad;
     render();
     onChange && onChange(state);
     const tr = container.querySelector(`tr[data-i="${state.indexOf(fila)}"]`);
     tr?.querySelector('[data-k=cantidad]')?.focus();
   };
-  return { get: () => state.filter(r => r.producto_id), total, agregar, set: rows => { state.splice(0, state.length, ...rows); render(); } };
+  return { get: () => state.filter(r => r.producto_id), total, agregar, set: rows => { state.splice(0, state.length, ...rows); render(); onChange && onChange(state); } };
 }
 
 // Redimensiona una foto a JPEG de 320px para no llenar el almacenamiento local.

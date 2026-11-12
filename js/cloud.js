@@ -346,3 +346,18 @@ export async function registrarUnidadNube({ codigo, unidad, grado, nombre, telef
   await funcion('registro', { codigo, unidad, grado, nombre, telefono: soloDigitos(telefono), password, modulos }, false);
   return ingresar(telefono, password);
 }
+
+// ---------- Lectura de facturas con IA (requiere conexión) ----------
+// Envía la foto a la Edge Function "factura". Devuelve { factura, usados, tope, dias }.
+export const leerFactura = datos => funcion('factura', datos);
+
+// Cuántas lecturas lleva la unidad en el periodo: { usados, tope, dias } o null si no se pudo consultar.
+export async function cupoFacturas() {
+  const u = S.currentUser();
+  if (!enabled || !u || !S.esUnidadNube()) return null;
+  try {
+    const token = await tokenDe(u.id);
+    if (!token) return null;
+    return await http('/rest/v1/rpc/facturas_cupo', { method: 'POST', token, body: {} });
+  } catch { return null; }
+}
