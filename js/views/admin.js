@@ -1,6 +1,6 @@
 import {
   q, db, currentUser, currentUnit, audit, ROLES, EXTRA_PERMS, MAX_ADICIONALES, exportUnit, importUnit, todayStr,
-  guardarUsuario, cambiarEstadoUsuario, guardarUnidad, esUnidadNube, licencia,
+  guardarUsuario, cambiarEstadoUsuario, guardarUnidad, esUnidadNube, licencia, espacio, guardadoEnDisco,
 } from '../store.js';
 import { esc, fdt, toast, modal, exportCSV, download, emptyRow, rangeBar, bindRange, periodo, attempt } from '../ui.js';
 import * as cloud from '../cloud.js';
@@ -119,6 +119,7 @@ export function unidad(_p, el) {
     const ok = enNube() ? await intentar(() => cloud.guardarUnidadNube(datos)) : attempt(() => guardarUnidad(datos));
     if (!ok) return;
     toast('Unidad actualizada');
+    await guardadoEnDisco();
     location.reload();
   };
 }
@@ -159,7 +160,19 @@ export function respaldo(_p, el) {
       <p class="muted">En este prototipo la información se guarda en este dispositivo. Descargue un respaldo con frecuencia y guárdelo en un lugar seguro. El respaldo contiene únicamente los datos de su unidad.</p>
       <div class="row"><button class="primary" id="exp">Descargar respaldo</button>
         <label class="btn">Restaurar respaldo<input type="file" accept="application/json,.json" id="imp" hidden></label></div>
+    </div>
+    <div class="card" style="max-width:680px">
+      <h3>Espacio en este dispositivo</h3>
+      <p class="small muted" id="espacio">Calculando…</p>
     </div>`;
+  const mb = n => (n / 1048576).toLocaleString('es-CO', { maximumFractionDigits: n < 10485760 ? 1 : 0 }) + ' MB';
+  espacio().then(e => {
+    const p = el.querySelector('#espacio');
+    if (!p) return;
+    const uso = e.usado === null ? '' : ` Ocupa <b>${mb(e.usado)}</b>${e.disponible ? ` de <b>${mb(e.disponible)}</b> que el navegador permite (${Math.max(0.1, Math.round((e.usado / e.disponible) * 1000) / 10).toLocaleString('es-CO')} %)` : ''}.`;
+    p.innerHTML = `Este dispositivo guarda <b>${e.filas.toLocaleString('es-CO')}</b> registros.${uso}` +
+      (e.indexedDB ? '' : '<br><b class="neg">Este navegador no permite el almacenamiento ampliado: el límite es de unos 5 MB.</b>');
+  });
   el.querySelector('#exp').onclick = () => {
     const data = attempt(() => exportUnit());
     if (!data) return;
@@ -173,6 +186,6 @@ export function respaldo(_p, el) {
     const text = await f.text();
     if (!confirm('Restaurar reemplazará TODOS los datos actuales de la unidad por los del respaldo. ¿Continuar?')) return;
     const ok = attempt(() => { importUnit(JSON.parse(text)); return true; });
-    if (ok) { toast('Respaldo restaurado'); setTimeout(() => location.reload(), 600); }
+    if (ok) { toast('Respaldo restaurado'); await guardadoEnDisco(); setTimeout(() => location.reload(), 600); }
   };
 }
