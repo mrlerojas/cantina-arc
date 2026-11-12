@@ -2,7 +2,7 @@
 // DEMO = true: datos de demostración (usuarios con PIN 1234) guardados solo en este dispositivo,
 //              sin conexión a Supabase. Es el modo de desarrollo.
 // DEMO = false: ingreso y sincronización con Supabase. publicar.sh genera así la versión publicada.
-export const DEMO = false; // versión publicada 20261112-0918
+export const DEMO = false; // versión publicada 20261112-1413
 
 // Proyecto de Supabase. La clave "publishable" es pública por diseño:
 // la seguridad la aplican las políticas (RLS) de la base de datos.

@@ -167,7 +167,9 @@ export function lineEditor(container, { productos, rows = [], cols = {}, onChang
           </tr>`).join('')}</tbody>
         ${cols.precio ? `<tfoot><tr class="total"><td colspan="${2 + (cols.precio ? 1 : 0) + (cols.origen ? 1 : 0)}">Total</td><td class="num" data-total>${money(total())}</td><td></td></tr></tfoot>` : ''}
       </table></div>
-      <button class="sm" data-add style="margin-top:8px">+ Agregar producto</button>`;
+      <div class="row" style="margin-top:8px"><button class="sm" data-add>+ Agregar producto</button>
+        ${cols.crear ? '<button class="sm" data-crear>✚ Crear producto nuevo</button>' : ''}</div>`;
+    container.querySelector('[data-crear]')?.addEventListener('click', () => cols.crear());
     container.querySelector('[data-add]').onclick = () => { state.push({ producto_id: '', cantidad: '', precio: '', origen: 'convencional' }); render(); };
     container.querySelectorAll('tr[data-i]').forEach(tr => {
       const i = +tr.dataset.i;
@@ -193,7 +195,20 @@ export function lineEditor(container, { productos, rows = [], cols = {}, onChang
   };
   const total = () => state.reduce((s, r) => s + (+r.cantidad || 0) * (+r.precio || 0), 0);
   render();
-  return { get: () => state.filter(r => r.producto_id), total, set: rows => { state.splice(0, state.length, ...rows); render(); } };
+  // Añade a la lista un producto recién creado y lo deja seleccionado en una fila
+  // (la primera que esté vacía, o una nueva).
+  const agregar = (p, precio = '') => {
+    if (!productos.some(x => x.id === p.id)) { productos.push(p); productos.sort((a, b) => a.nombre.localeCompare(b.nombre)); }
+    let fila = state.find(r => !r.producto_id);
+    if (!fila) { fila = { producto_id: '', cantidad: '', precio: '', origen: 'convencional' }; state.push(fila); }
+    fila.producto_id = p.id;
+    if (precio) fila.precio = precio;
+    render();
+    onChange && onChange(state);
+    const tr = container.querySelector(`tr[data-i="${state.indexOf(fila)}"]`);
+    tr?.querySelector('[data-k=cantidad]')?.focus();
+  };
+  return { get: () => state.filter(r => r.producto_id), total, agregar, set: rows => { state.splice(0, state.length, ...rows); render(); } };
 }
 
 // Redimensiona una foto a JPEG de 320px para no llenar el almacenamiento local.
