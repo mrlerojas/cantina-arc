@@ -57,46 +57,25 @@ function emptyDB() {
   return db;
 }
 
-export let db = load();
-let session = loadSession();
-
-function load() {
-  try {
-    const raw = localStorage.getItem(KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      TABLES.forEach(t => (parsed[t] ||= []));
-      return parsed;
-    }
-  } catch (e) { console.error('No se pudo leer la base local', e); }
-  return emptyDB();
-}
-
-function loadSession() {
-  try { return JSON.parse(localStorage.getItem(SKEY)) || null; } catch { return null; }
-}
-
-export function save() {
-  rastrear();
-  try {
-    localStorage.setItem(KEY, JSON.stringify(db));
-    if (seguimiento) localStorage.setItem(YKEY, JSON.stringify(sync));
-  } catch (e) {
-    console.error(e);
-    alert('No se pudo guardar: el almacenamiento del dispositivo está lleno. Reduzca fotografías o exporte un respaldo.');
-  }
-  alGuardarFns.forEach(fn => fn());
-}
-
-// ---------- Sincronización con la nube: seguimiento de cambios ----------
-// Cada vez que se guarda, se compara cada registro con su última versión conocida ("sombra")
-// y los que cambiaron quedan pendientes de subir. cloud.js los sube y baja los de otros dispositivos.
+// ---------- Almacenamiento en el dispositivo ----------
+// Los datos viven en memoria (db) y se guardan en IndexedDB, un registro por fila.
+// IndexedDB admite cientos de MB (antes se usaba localStorage, limitado a unos 5 MB).
+// En cada save() se compara cada fila con su última versión conocida ("sombra") y solo se
+// escriben en disco las que cambiaron. Si el navegador no ofrece IndexedDB se sigue usando
+// localStorage. Sesión, estado de sincronización y accesos siguen en localStorage (son pequeños).
 const YKEY = 'navlog_sync_v1';
+const IDB_NOMBRE = 'cantina';
+const IDB_FILAS = 'filas';
 export const SYNC_TABLES = TABLES.filter(t => t !== 'unidades' && t !== 'usuarios');
-let seguimiento = false;
+let seguimiento = false; // true cuando la app está conectada a la nube (cloud.js)
 let sync = loadSync(); // { dirty: { tabla: { id: 1 } }, cursor: { unidadId: { tabla: fecha } } }
 const sombra = {};
+TABLES.forEach(t => { sombra[t] = new Map(); });
 const alGuardarFns = [];
+let idb = null;          // conexión a IndexedDB (null = se usa localStorage)
+const cola = new Map();  // filas por escribir en disco: "tabla\u0000id" -> [tabla, id]
+let escribiendo = null;  // promesa de la escritura en curso
+let avisoLleno = false;
 
 function loadSync() {
   try {
@@ -106,21 +85,160 @@ function loadSync() {
   return { dirty: {}, cursor: {} };
 }
 
-export function activarSeguimiento() {
-  seguimiento = true;
-  SYNC_TABLES.forEach(t => { sombra[t] = new Map(db[t].map(r => [r.id, JSON.stringify(r)])); });
+function loadLocalStorage() {
+  try {
+    const raw = localStorage.getItem(KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      TABLES.forEach(t => (parsed[t] ||= []));
+      return parsed;
+    }
+  } catch (e) { console.error('No se pudo leer la base local', e); }
+  return null;
 }
+
+const pedido = req => new Promise((ok, mal) => { req.onsuccess = () => ok(req.result); req.onerror = () => mal(req.error); });
+
+function abrirIDB() {
+  return new Promise((ok, mal) => {
+    if (!('indexedDB' in globalThis)) return mal(new Error('IndexedDB no disponible'));
+    const req = indexedDB.open(IDB_NOMBRE, 1);
+    req.onupgradeneeded = () => req.result.createObjectStore(IDB_FILAS);
+    req.onsuccess = () => {
+      // Si otra pestaña necesita actualizar o borrar el almacenamiento, esta suelta su conexión
+      // y se recarga para volver a leer los datos.
+      req.result.onversionchange = () => { req.result.close(); location.reload(); };
+      ok(req.result);
+    };
+    req.onerror = () => mal(req.error);
+    req.onblocked = () => mal(new Error('IndexedDB bloqueada'));
+  });
+}
+
+async function cargar() {
+  let base = null;
+  try {
+    idb = await abrirIDB();
+    const st = idb.transaction(IDB_FILAS, 'readonly').objectStore(IDB_FILAS);
+    const [claves, filas] = await Promise.all([pedido(st.getAllKeys()), pedido(st.getAll())]);
+    if (claves.length) {
+      base = emptyDB();
+      claves.forEach(([t], i) => { if (base[t]) base[t].push(filas[i]); });
+      TABLES.forEach(t => base[t].forEach(r => sombra[t].set(r.id, JSON.stringify(r))));
+      localStorage.removeItem(KEY); // por si quedó una copia de la versión anterior
+      return base;
+    }
+  } catch (e) {
+    console.warn('Se usará el almacenamiento básico del navegador:', e);
+    idb = null;
+  }
+  // Primera vez con IndexedDB: se migran los datos que hubiera en localStorage.
+  base = loadLocalStorage();
+  if (!base) return emptyDB();
+  if (idb) {
+    TABLES.forEach(t => base[t].forEach(r => { if (r && r.id) { sombra[t].set(r.id, JSON.stringify(r)); cola.set(t + '\u0000' + r.id, [t, r.id]); } }));
+    db = base;
+    try { await vaciarCola(); localStorage.removeItem(KEY); }
+    catch (e) { console.error('No se pudo migrar a IndexedDB; se sigue con localStorage', e); idb = null; cola.clear(); }
+  } else {
+    TABLES.forEach(t => base[t].forEach(r => { if (r && r.id) sombra[t].set(r.id, JSON.stringify(r)); }));
+  }
+  return base;
+}
+
+// Escribe en IndexedDB las filas en cola (una sola transacción). Devuelve cuando quedó en disco.
+function vaciarCola() {
+  if (!idb || !cola.size) return Promise.resolve();
+  const lote = [...cola.values()];
+  cola.clear();
+  const porTabla = {};
+  return new Promise((ok, mal) => {
+    const tx = idb.transaction(IDB_FILAS, 'readwrite');
+    const st = tx.objectStore(IDB_FILAS);
+    for (const [t, id] of lote) {
+      porTabla[t] ||= new Map(db[t].map(r => [r.id, r]));
+      const fila = porTabla[t].get(id);
+      if (fila) st.put(fila, [t, id]); else st.delete([t, id]);
+    }
+    tx.oncomplete = () => ok();
+    tx.onerror = tx.onabort = () => { lote.forEach(([t, id]) => cola.set(t + '\u0000' + id, [t, id])); mal(tx.error); };
+  });
+}
+
+function escribir() {
+  if (escribiendo || !cola.size) return;
+  escribiendo = vaciarCola()
+    .catch(e => {
+      console.error('No se pudo guardar en el dispositivo', e);
+      if (!avisoLleno) {
+        avisoLleno = true;
+        alert('No se pudo guardar en el dispositivo: puede estar lleno. Libere espacio y exporte un respaldo desde Administración → Respaldo.');
+      }
+    })
+    .finally(() => { escribiendo = null; if (cola.size && !avisoLleno) escribir(); });
+}
+
+// Promesa que se cumple cuando todo lo guardado hasta ahora está en disco.
+export async function guardadoEnDisco() {
+  while (escribiendo || (idb && cola.size && !avisoLleno)) { escribir(); await escribiendo; }
+}
+
+export let db = emptyDB();
+db = await cargar();
+let session = loadSession();
+// Pide al navegador no borrar estos datos si el dispositivo se queda sin espacio.
+try { navigator.storage?.persist?.(); } catch { /* opcional */ }
+
+function loadSession() {
+  try { return JSON.parse(localStorage.getItem(SKEY)) || null; } catch { return null; }
+}
+
+export function save() {
+  rastrear();
+  try {
+    if (idb) escribir(); else localStorage.setItem(KEY, JSON.stringify(db));
+    if (seguimiento) localStorage.setItem(YKEY, JSON.stringify(sync));
+  } catch (e) {
+    console.error(e);
+    alert('No se pudo guardar: el almacenamiento del dispositivo está lleno. Reduzca fotografías o exporte un respaldo.');
+  }
+  alGuardarFns.forEach(fn => fn());
+}
+
+// Espacio usado en el dispositivo (para la pantalla de Respaldo).
+export async function espacio() {
+  const filas = TABLES.reduce((s, t) => s + db[t].length, 0);
+  let usado = null, disponible = null;
+  try { const e = await navigator.storage.estimate(); usado = e.usage ?? null; disponible = e.quota ?? null; } catch { /* no disponible */ }
+  return { filas, usado, disponible, indexedDB: !!idb };
+}
+
+// ---------- Sincronización con la nube: cambios pendientes de subir ----------
+// cloud.js sube los registros marcados como pendientes y baja los de otros dispositivos.
+export function activarSeguimiento() { seguimiento = true; }
 
 export function alGuardar(fn) { alGuardarFns.push(fn); }
 
+// Compara cada fila con su sombra: las que cambiaron (o desaparecieron) van a la cola de disco
+// y, si la app está conectada a la nube, quedan pendientes de subir.
 function rastrear() {
-  if (!seguimiento) return;
-  for (const t of SYNC_TABLES) {
+  for (const t of TABLES) {
     const m = sombra[t];
+    const subir = seguimiento && t !== 'unidades' && t !== 'usuarios';
+    let vistas = 0;
     for (const r of db[t]) {
       if (!r || !r.id) continue;
+      vistas++;
       const s = JSON.stringify(r);
-      if (m.get(r.id) !== s) { m.set(r.id, s); (sync.dirty[t] ||= {})[r.id] = 1; }
+      if (m.get(r.id) !== s) {
+        m.set(r.id, s);
+        cola.set(t + '\u0000' + r.id, [t, r.id]);
+        if (subir) (sync.dirty[t] ||= {})[r.id] = 1;
+      }
+    }
+    if (m.size > vistas) { // se quitaron filas (restaurar respaldo, cambio de perfiles)
+      const ids = new Set(db[t].map(r => r && r.id));
+      for (const id of [...m.keys()]) if (!ids.has(id)) { m.delete(id); cola.set(t + '\u0000' + id, [t, id]); }
     }
   }
 }
@@ -167,6 +285,7 @@ export function aplicarRemotas(tabla, filas) {
     }
     if (local) db[tabla][i] = r; else { db[tabla].push(r); pos.set(r.id, db[tabla].length - 1); }
     sombra[tabla].set(r.id, JSON.stringify(r));
+    cola.set(tabla + '\u0000' + r.id, [tabla, r.id]); // también va a disco
     cambios++;
   }
   return cambios;
