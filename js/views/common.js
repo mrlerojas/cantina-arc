@@ -58,7 +58,9 @@ export function productos(_p, el, modulo) {
   render();
 }
 
-function productoForm(p, modulo, done) {
+// opts.enCompra: se abre desde el registro de una compra; no pide inventario inicial
+// (la cantidad entra con la compra) y devuelve el producto creado.
+function productoForm(p, modulo, done, opts = {}) {
   const opera = can(modulo + '.operar');
   const pv = p ? precioVigente(p.id) || {} : {};
   const cats = [...new Set(q('productos', x => x.modulo === modulo).map(x => x.categoria).filter(Boolean))];
@@ -85,7 +87,8 @@ function productoForm(p, modulo, done) {
           <label class="field"><span>Precio tripulación</span><input name="tripulacion" type="number" min="0" required value="${pv.tripulacion ?? ''}"></label>
           <label class="field"><span>Precio externo</span><input name="externo" type="number" min="0" required value="${pv.externo ?? ''}"></label>
           <label class="field"><span>Vigente desde</span><input name="desde" type="date" value="${todayStr()}"></label>` : ''}
-        ${!p ? `
+        ${opts.enCompra ? '<p class="small muted full" style="margin:0">La cantidad y el costo se indican en la compra; no hace falta inventario inicial.</p>' : ''}
+        ${!p && !opts.enCompra ? `
           <div class="full"><h3 style="margin:6px 0 0">Inventario inicial</h3></div>
           <label class="field"><span>Cantidad</span><input name="ini_cant" type="number" step="any" min="0" value=""></label>
           <label class="field"><span>Costo unitario</span><input name="ini_costo" type="number" step="any" min="0" value=""></label>` : ''}
@@ -122,6 +125,7 @@ function productoForm(p, modulo, done) {
         };
         if (modulo === 'cantina') data.foto = foto;
         const precio = modulo === 'cantina' ? { compra: +f.compra.value || 0, tripulacion: +f.tripulacion.value || 0, externo: +f.externo.value || 0, desde: f.desde.value || todayStr() } : null;
+        let creado = null;
         const ok = attempt(() => {
           if (p) {
             if (!opera) throw new Error('No tiene permiso para realizar esta acción.');
@@ -130,11 +134,11 @@ function productoForm(p, modulo, done) {
             audit('Producto modificado', 'productos', p.id, data.nombre);
             if (precio) setPrecio(p.id, precio);
           } else {
-            crearProducto({ ...data, _precio: precio }, { cantidad: f.ini_cant.value, costo: f.ini_costo.value || precio?.compra || 0 });
+            creado = crearProducto({ ...data, _precio: precio }, opts.enCompra ? null : { cantidad: f.ini_cant.value, costo: f.ini_costo.value || precio?.compra || 0 });
           }
           return true;
         });
-        if (ok) { api.close(); toast('Producto guardado'); done(); }
+        if (ok) { api.close(); toast('Producto guardado'); done(creado, precio?.compra || ''); }
       });
     },
   });
@@ -218,7 +222,11 @@ function compraForm(modulo, done) {
       const prov = m.querySelector('#prov');
       editor = lineEditor(m.querySelector('#lines'), {
         productos: productosModulo(modulo),
-        cols: { precio: 'Precio unitario', defaultPrecio: pid => ultimoPrecio(pid, prov.value) },
+        cols: {
+          precio: 'Precio unitario', defaultPrecio: pid => ultimoPrecio(pid, prov.value),
+          // Producto que aún no existe: se crea aquí mismo y queda agregado a la compra.
+          crear: () => productoForm(null, modulo, (np, costo) => { if (np) editor.agregar(np, costo); }, { enCompra: true }),
+        },
       });
       m.querySelector('#np').onclick = () => proveedorForm(null, p => { prov.insertAdjacentHTML('beforeend', `<option value="${p.id}">${esc(p.nombre)}</option>`); prov.value = p.id; });
       m.querySelector('#ok').onclick = () => {
