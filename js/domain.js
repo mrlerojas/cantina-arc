@@ -157,7 +157,9 @@ export function saldoCliente(cliente_id, hasta = '9999-12-31') {
     .reduce((s, v) => s + (v.total - (v.pagado || 0)), 0);
   const pagos = q('pagos', p => p.cliente_id === cliente_id && p.estado === 'activo' && p.fecha <= hasta)
     .reduce((s, p) => s + p.valor, 0);
-  return r0(deuda - pagos);
+  // Saldo anterior: deuda que el cliente traía de otro sistema al migrar (ver importarTreinta).
+  const anterior = get('clientes', cliente_id)?.saldo_inicial || 0;
+  return r0(anterior + deuda - pagos);
 }
 
 export function registrarPago({ cliente_id, valor, metodo, fecha = todayStr(), nota = '' }) {
@@ -341,6 +343,7 @@ export function estadoCuentaTexto(cliente_id, recordatorio = false) {
     ...q('pagos', p => p.cliente_id === cliente_id && p.estado === 'activo')
       .map(p => ({ f: p.fecha, t: 'Pago', d: -p.valor })),
   ].sort((a, b) => a.f.localeCompare(b.f)).slice(-12);
+  if (c.saldo_inicial) L.push(`Saldo anterior${c.saldo_inicial_origen ? ' (' + c.saldo_inicial_origen + ')' : ''}  ${money(c.saldo_inicial)}`);
   movs.forEach(m => L.push(`${fdate(m.f)} ${m.t}  ${m.d < 0 ? '-' : ''}${money(Math.abs(m.d))}`));
   L.push('', `*SALDO ACTUAL: ${money(saldo)}*`);
   return L.join('\n');
@@ -643,3 +646,100 @@ export function balanceCoal(d1, d2) {
 export const productosModulo = modulo =>
   q('productos', p => p.modulo === modulo && p.estado === 'activo').sort((a, b) => a.nombre.localeCompare(b.nombre));
 
+
+// ======================= MIGRACIÓN DESDE TREINTA =======================
+// Trae de Treinta el estado actual, sin historial de ventas (no altera los balances):
+//   productos: [{ nombre, categoria, codigo, cantidad, costo, precio, precioExterno, accion, producto_id }]
+//     accion 'nuevo'  -> crea el producto con sus existencias como inventario inicial.
+//     accion 'sumar'  -> el producto ya existe (producto_id): conserva nombre y precios de CANTINA
+//                        y SUMA las existencias de Treinta a las que ya tiene.
+//   clientes: [{ nombre, saldo, detalle, accion, cliente_id }]
+//     accion 'nuevo'   -> crea el cliente con la deuda como saldo anterior.
+//     accion 'asignar' -> el cliente ya existe (cliente_id): solo se le pone la deuda como saldo anterior.
+// Cada producto y cliente guarda la marca de lo que ya recibió de Treinta, de modo que repetir
+// la importación no duplica existencias ni deudas. Primero se valida todo; si algo falla no se guarda nada.
+const unEspacio = s => String(s || '').split(/\s+/).filter(Boolean).join(' ');
+export const claveNombre = s => unEspacio(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+
+export function importarTreinta({ productos = [], clientes = [] }) {
+  if (!can('admin')) throw new Error('Solo el administrador de la unidad puede importar datos.');
+  exigir('cantina.operar', 'cantina');
+
+  // ---- 1. Validar todo antes de escribir ----
+  const nombres = new Set(q('productos', p => p.modulo === 'cantina' && p.estado !== 'eliminado').map(p => claveNombre(p.nombre)));
+  const planP = productos.map(p => {
+    const nombre = unEspacio(p.nombre), k = claveNombre(nombre);
+    if (!nombre) throw new Error('Hay un producto sin nombre en el archivo.');
+    if (p.accion === 'sumar') {
+      const dest = get('productos', p.producto_id);
+      if (!dest || dest.modulo !== 'cantina') throw new Error(`No se encontró el producto existente para "${nombre}".`);
+      if ((dest.treinta || []).includes(k)) throw new Error(`"${nombre}" ya se había sumado a "${dest.nombre}". Quítelo de la importación.`);
+      return { ...p, nombre, k, dest };
+    }
+    if (nombres.has(k)) throw new Error(`Ya existe un producto llamado "${nombre}". Elija "Sumar a existente" o no lo importe.`);
+    nombres.add(k);
+    return { ...p, nombre, k, dest: null };
+  });
+  const yaClientes = new Set(q('clientes', c => c.estado === 'activo').map(c => claveNombre(nombreCliente(c))));
+  const planC = clientes.map(c => {
+    const nombre = unEspacio(c.nombre), k = claveNombre(nombre), saldo = r0(c.saldo);
+    if (!nombre || !(saldo > 0)) throw new Error('Hay una deuda sin nombre o sin valor en el archivo.');
+    if (c.accion === 'asignar') {
+      const dest = get('clientes', c.cliente_id);
+      if (!dest || dest.estado !== 'activo') throw new Error(`No se encontró el cliente existente para "${nombre}".`);
+      if ((dest.treinta || []).includes(k)) throw new Error(`La deuda de "${nombre}" ya se había pasado a ${nombreCliente(dest)}. Quítela de la importación.`);
+      return { ...c, nombre, k, saldo, dest };
+    }
+    if (yaClientes.has(k)) throw new Error(`Ya existe un cliente llamado "${nombre}". Asígnele la deuda en lugar de crearlo.`);
+    yaClientes.add(k);
+    return { ...c, nombre, k, saldo, dest: null };
+  });
+
+  // ---- 2. Guardar ----
+  const res = { productos: 0, sumados: 0, unidadesSumadas: 0, valorInventario: 0, clientes: 0, asignados: 0, deuda: 0 };
+  for (const p of planP) {
+    const costo = Math.max(0, +p.costo || 0), cantidad = Math.max(0, r3(p.cantidad));
+    if (p.dest) {
+      if (cantidad > 0) {
+        addMov({ producto_id: p.dest.id, tipo: 'inicial', entrada: cantidad, costo_unit: costo, detalle: `Existencias traídas de Treinta (${p.nombre})` });
+        res.unidadesSumadas += cantidad;
+      }
+      update('productos', p.dest.id, { treinta: [...(p.dest.treinta || []), p.k] });
+      audit('Existencias sumadas desde Treinta', 'productos', p.dest.id, `${p.dest.nombre}: +${cantidad} ${p.dest.unidad_medida} (en Treinta: ${p.nombre})`);
+      res.sumados++;
+    } else {
+      const data = { modulo: 'cantina', nombre: p.nombre, categoria: unEspacio(p.categoria), unidad_medida: 'UND', stock_min: 0, foto: '📦', treinta: [p.k] };
+      if (p.codigo) data.codigo = String(p.codigo);
+      crearProducto({ ...data, _precio: { compra: r0(costo), tripulacion: r0(p.precio), externo: r0(p.precioExterno ?? p.precio) } },
+        cantidad > 0 ? { cantidad, costo } : null);
+      res.productos++;
+    }
+    res.valorInventario += cantidad * costo;
+  }
+  for (const c of planC) {
+    const detalle = (c.detalle || []).slice(0, 200).map(d => ({ fecha: String(d.fecha || ''), descripcion: String(d.descripcion || '').slice(0, 300), valor: r0(d.valor) }));
+    if (c.dest) {
+      const actual = get('clientes', c.dest.id); // puede haber recibido otra deuda en esta misma importación
+      update('clientes', actual.id, {
+        saldo_inicial: (actual.saldo_inicial || 0) + c.saldo, saldo_inicial_origen: 'Treinta', saldo_inicial_fecha: todayStr(),
+        saldo_inicial_detalle: [...(actual.saldo_inicial_detalle || []), ...detalle], treinta: [...(actual.treinta || []), c.k],
+      });
+      audit('Deuda traída de Treinta', 'clientes', actual.id, `${nombreCliente(actual)}: saldo anterior $${c.saldo} (en Treinta: ${c.nombre})`);
+      res.asignados++;
+    } else {
+      // Treinta guarda el nombre en un solo campo; entra completo en "apellido" y se puede editar después.
+      const row = insert('clientes', {
+        tipo: 'tripulacion', grado: '', apellido: c.nombre, nombre: '', telefono: '',
+        saldo_inicial: c.saldo, saldo_inicial_origen: 'Treinta', saldo_inicial_fecha: todayStr(), saldo_inicial_detalle: detalle, treinta: [c.k],
+      });
+      audit('Cliente importado', 'clientes', row.id, `${c.nombre}: saldo anterior $${c.saldo} (Treinta)`);
+      res.clientes++;
+    }
+    res.deuda += c.saldo;
+  }
+  save();
+  audit('Importación desde Treinta', 'unidades', currentUnit().id,
+    `${res.productos} productos nuevos, ${res.sumados} con existencias sumadas (inventario traído $${r0(res.valorInventario)}); ` +
+    `${res.asignados} deudas a clientes existentes y ${res.clientes} clientes nuevos (por cobrar $${res.deuda})`);
+  return res;
+}

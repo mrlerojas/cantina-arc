@@ -10,6 +10,7 @@ import * as common from './views/common.js';
 import * as coal from './views/coal.js';
 import * as admin from './views/admin.js';
 import { licencias as vistaLicencias } from './views/licencias.js';
+import { importar as vistaImportar } from './views/importar.js';
 
 // Los datos de demostración solo se cargan en desarrollo (ver config.js y publicar.sh).
 if (DEMO && isEmpty()) (await import('./seed.js')).seed();
@@ -41,6 +42,7 @@ const ROUTES = {
   'admin/unidad': { t: 'Unidad y módulos', v: admin.unidad, p: 'admin' },
   'admin/auditoria': { t: 'Auditoría', v: admin.auditoria, p: 'auditoria' },
   'admin/respaldo': { t: 'Respaldo de datos', v: admin.respaldo, p: 'admin' },
+  'admin/importar': { t: 'Importar de Treinta', v: vistaImportar, p: 'admin', m: 'cantina' },
   'propietario/licencias': { t: 'Licencias de unidades', v: vistaLicencias, p: 'propietario' },
 };
 
@@ -61,6 +63,7 @@ const NAV = [
   { g: 'ADMINISTRACIÓN', items: [
     ['admin/usuarios', '🔐', 'Usuarios y permisos'], ['admin/unidad', '🚢', 'Unidad y módulos'],
     ['admin/auditoria', '🕵️', 'Auditoría'], ['admin/respaldo', '💾', 'Respaldo'],
+    ['admin/importar', '📲', 'Importar de Treinta'],
   ] },
   { g: 'PROPIETARIO', items: [['propietario/licencias', '🔑', 'Licencias']] },
 ];
