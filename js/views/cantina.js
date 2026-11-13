@@ -293,6 +293,13 @@ function clienteDetalle(id, onChange) {
     ...ventas.map(v => ({ f: v.fecha, k: v.creado_en, html: `<tr class="${v.estado === 'anulado' ? 'anulado' : ''}"><td>${fdate(v.fecha)}</td><td><a href="#" data-venta="${v.id}">Venta #${pad(v.numero)}</a> <span class="small muted">${v.forma === 'credito' ? 'Crédito' : 'Contado'}</span></td><td class="num">${money(v.total)}</td><td class="num">${v.forma === 'credito' ? money(v.total - (v.pagado || 0)) : '—'}</td><td>${v.estado === 'anulado' ? estadoBadge('anulado') : ''}</td></tr>` })),
     ...pagos.map(p => ({ f: p.fecha, k: p.creado_en, html: `<tr class="${p.estado === 'anulado' ? 'anulado' : ''}"><td>${fdate(p.fecha)}</td><td>Pago ${esc(p.metodo || '')}${p.nota ? ` <span class="small muted">${esc(p.nota)}</span>` : ''}</td><td class="num"></td><td class="num pos">-${money(p.valor)}</td><td>${p.estado === 'activo' && can('anular') ? `<button class="sm danger" data-anpago="${p.id}">Anular</button>` : p.estado === 'anulado' ? estadoBadge('anulado') : ''}</td></tr>` })),
   ].sort((a, b) => (b.f + b.k).localeCompare(a.f + a.k));
+  // Deuda que el cliente traía al migrar (queda al final del historial, con su detalle).
+  if (c.saldo_inicial) {
+    const det = c.saldo_inicial_detalle || [];
+    movs.push({ html: `<tr><td>${fdate(c.saldo_inicial_fecha || '')}</td><td><b>Saldo anterior${c.saldo_inicial_origen ? ' (' + esc(c.saldo_inicial_origen) + ')' : ''}</b>
+      ${det.length ? `<details class="small muted"><summary>${det.length} compra(s) fiadas</summary>${det.map(d => `${esc(d.fecha)} · ${esc(d.descripcion)} · ${money(d.valor)}`).join('<br>')}</details>` : ''}</td>
+      <td class="num">${money(c.saldo_inicial)}</td><td class="num">${money(c.saldo_inicial)}</td><td></td></tr>` });
+  }
   const api = modal({
     title: esc(nombreCliente(c)),
     wide: true,
