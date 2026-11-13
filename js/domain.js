@@ -661,6 +661,21 @@ export const productosModulo = modulo =>
 const unEspacio = s => String(s || '').split(/\s+/).filter(Boolean).join(' ');
 export const claveNombre = s => unEspacio(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
 
+// Deudas del archivo que el cliente todavía no tiene en su saldo anterior. Se compara compra
+// por compra (fecha, descripción y valor, respetando repeticiones), no por cliente: así se
+// puede importar primero un reporte parcial y después el completo sin duplicar ni perder nada.
+const normDeuda = d => ({ fecha: String(d.fecha || ''), descripcion: String(d.descripcion || '').slice(0, 300), valor: r0(d.valor) });
+const claveDeuda = d => `${d.fecha}|${d.descripcion}|${d.valor}`;
+export function deudasNuevas(detalleArchivo, detalleExistente) {
+  const ya = new Map();
+  (detalleExistente || []).map(normDeuda).forEach(d => ya.set(claveDeuda(d), (ya.get(claveDeuda(d)) || 0) + 1));
+  return (detalleArchivo || []).slice(0, 2000).map(normDeuda).filter(d => {
+    const k = claveDeuda(d), n = ya.get(k) || 0;
+    if (n > 0) { ya.set(k, n - 1); return false; }
+    return true;
+  });
+}
+
 export function importarTreinta({ productos = [], clientes = [] }) {
   if (!can('admin')) throw new Error('Solo el administrador de la unidad puede importar datos.');
   exigir('cantina.operar', 'cantina');
@@ -687,7 +702,6 @@ export function importarTreinta({ productos = [], clientes = [] }) {
     if (c.accion === 'asignar') {
       const dest = get('clientes', c.cliente_id);
       if (!dest || dest.estado !== 'activo') throw new Error(`No se encontró el cliente existente para "${nombre}".`);
-      if ((dest.treinta || []).includes(k)) throw new Error(`La deuda de "${nombre}" ya se había pasado a ${nombreCliente(dest)}. Quítela de la importación.`);
       return { ...c, nombre, k, saldo, dest };
     }
     if (yaClientes.has(k)) throw new Error(`Ya existe un cliente llamado "${nombre}". Asígnele la deuda en lugar de crearlo.`);
@@ -696,7 +710,7 @@ export function importarTreinta({ productos = [], clientes = [] }) {
   });
 
   // ---- 2. Guardar ----
-  const res = { productos: 0, sumados: 0, unidadesSumadas: 0, valorInventario: 0, clientes: 0, asignados: 0, deuda: 0 };
+  const res = { productos: 0, sumados: 0, unidadesSumadas: 0, valorInventario: 0, clientes: 0, asignados: 0, sinCambios: 0, deuda: 0 };
   for (const p of planP) {
     const costo = Math.max(0, +p.costo || 0), cantidad = Math.max(0, r3(p.cantidad));
     if (p.dest) {
@@ -717,15 +731,22 @@ export function importarTreinta({ productos = [], clientes = [] }) {
     res.valorInventario += cantidad * costo;
   }
   for (const c of planC) {
-    const detalle = (c.detalle || []).slice(0, 200).map(d => ({ fecha: String(d.fecha || ''), descripcion: String(d.descripcion || '').slice(0, 300), valor: r0(d.valor) }));
+    const detalle = (c.detalle || []).slice(0, 2000).map(normDeuda);
     if (c.dest) {
       const actual = get('clientes', c.dest.id); // puede haber recibido otra deuda en esta misma importación
+      // Solo entran las compras que el cliente aún no tiene (permite completar un reporte parcial).
+      const nuevas = deudasNuevas(detalle, actual.saldo_inicial_detalle);
+      const monto = nuevas.reduce((s, d) => s + d.valor, 0);
+      if (!nuevas.length) { res.sinCambios++; continue; }
       update('clientes', actual.id, {
-        saldo_inicial: (actual.saldo_inicial || 0) + c.saldo, saldo_inicial_origen: 'Treinta', saldo_inicial_fecha: todayStr(),
-        saldo_inicial_detalle: [...(actual.saldo_inicial_detalle || []), ...detalle], treinta: [...(actual.treinta || []), c.k],
+        saldo_inicial: (actual.saldo_inicial || 0) + monto, saldo_inicial_origen: 'Treinta', saldo_inicial_fecha: actual.saldo_inicial_fecha || todayStr(),
+        saldo_inicial_detalle: [...(actual.saldo_inicial_detalle || []), ...nuevas],
+        treinta: (actual.treinta || []).includes(c.k) ? actual.treinta : [...(actual.treinta || []), c.k],
       });
-      audit('Deuda traída de Treinta', 'clientes', actual.id, `${nombreCliente(actual)}: saldo anterior $${c.saldo} (en Treinta: ${c.nombre})`);
+      audit('Deuda traída de Treinta', 'clientes', actual.id, `${nombreCliente(actual)}: +$${monto} en ${nuevas.length} compra(s) (en Treinta: ${c.nombre}); saldo anterior ahora $${(actual.saldo_inicial || 0) + monto}`);
       res.asignados++;
+      res.deuda += monto;
+      continue;
     } else {
       // Treinta guarda el nombre en un solo campo; entra completo en "apellido" y se puede editar después.
       const row = insert('clientes', {
@@ -742,4 +763,25 @@ export function importarTreinta({ productos = [], clientes = [] }) {
     `${res.productos} productos nuevos, ${res.sumados} con existencias sumadas (inventario traído $${r0(res.valorInventario)}); ` +
     `${res.asignados} deudas a clientes existentes y ${res.clientes} clientes nuevos (por cobrar $${res.deuda})`);
   return res;
+}
+
+// Corrige a mano el saldo anterior de un cliente (por ejemplo, un abono hecho en el sistema
+// anterior que el reporte no reflejaba). Solo el administrador; queda en la auditoría.
+export function ajustarSaldoAnterior(cliente_id, valor, motivo) {
+  if (!can('admin')) throw new Error('Solo el administrador de la unidad puede corregir el saldo anterior.');
+  exigir('cantina.operar', 'cantina');
+  const c = get('clientes', cliente_id);
+  if (!c) throw new Error('Cliente no encontrado.');
+  const nuevo = r0(valor);
+  if (!(nuevo >= 0)) throw new Error('El saldo anterior no puede ser negativo.');
+  if (!String(motivo || '').trim()) throw new Error('Indique el motivo de la corrección.');
+  const antes = c.saldo_inicial || 0;
+  if (nuevo === antes) return c;
+  const row = update('clientes', c.id, {
+    saldo_inicial: nuevo, saldo_inicial_fecha: c.saldo_inicial_fecha || todayStr(),
+    saldo_inicial_origen: c.saldo_inicial_origen || 'Ajuste manual',
+    saldo_inicial_ajustes: [...(c.saldo_inicial_ajustes || []), { fecha: todayStr(), antes, despues: nuevo, motivo: String(motivo).trim().slice(0, 200) }],
+  });
+  audit('Corrección de saldo anterior', 'clientes', c.id, `${nombreCliente(c)}: $${antes} → $${nuevo}`, String(motivo).trim());
+  return row;
 }
