@@ -1,7 +1,7 @@
 import { q, get, insert, update, can, currentUnit, todayStr, audit, userName } from '../store.js';
 import {
   precioVigente, stock, registrarVenta, anularVenta, saldoCliente, registrarPago, anularPago, nombreCliente,
-  reciboTexto, estadoCuentaTexto, waLink, balanceCantina, METODOS_PAGO, pad, productosModulo,
+  reciboTexto, estadoCuentaTexto, waLink, balanceCantina, METODOS_PAGO, pad, productosModulo, ajustarSaldoAnterior,
 } from '../domain.js';
 import {
   esc, money, fdate, fdt, qty, toast, attempt, modal, askMotivo, exportCSV, printDoc, rangeBar, bindRange,
@@ -229,6 +229,9 @@ export function clienteForm(c, onSave, tipoDefault = 'tripulacion') {
         <label class="field"><span>Apellido</span><input name="apellido" value="${esc(c?.apellido || '')}" required></label>
         <label class="field"><span>Nombre</span><input name="nombre" value="${esc(c?.nombre || '')}"></label>
         <label class="field full"><span>Teléfono (WhatsApp)</span><input name="telefono" type="tel" inputmode="numeric" value="${esc(c?.telefono || '')}"></label>
+        ${c && can('admin') ? `<div class="full"><h3 style="margin:6px 0 0">Saldo anterior <span class="small muted">(deuda traída de otro sistema; solo el administrador)</span></h3></div>
+          <label class="field"><span>Saldo anterior</span><input name="saldo_inicial" type="number" min="0" inputmode="numeric" value="${c.saldo_inicial || 0}"></label>
+          <label class="field"><span>Motivo si lo cambia</span><input name="motivo_saldo" placeholder="Ej.: abonó $20.000 en Treinta"></label>` : ''}
       </form>`,
     foot: `<button data-close>Cancelar</button><button class="primary" id="ok">Guardar</button>`,
     onMount: (m, api) => m.querySelector('#ok').onclick = () => {
@@ -236,6 +239,9 @@ export function clienteForm(c, onSave, tipoDefault = 'tripulacion') {
       if (!f.reportValidity()) return;
       const data = { tipo: f.tipo.value, grado: f.grado.value.trim(), apellido: f.apellido.value.trim(), nombre: f.nombre.value.trim(), telefono: f.telefono.value.replace(/\D/g, '') };
       if (!can('cantina.operar')) return toast('No tiene permiso para realizar esta acción.', true);
+      if (f.saldo_inicial && (+f.saldo_inicial.value || 0) !== (c.saldo_inicial || 0)) {
+        if (!attempt(() => ajustarSaldoAnterior(c.id, f.saldo_inicial.value, f.motivo_saldo.value))) return;
+      }
       const row = c ? update('clientes', c.id, data) : insert('clientes', data);
       audit(c ? 'Cliente modificado' : 'Cliente creado', 'clientes', row.id, nombreCliente(row));
       api.close(); onSave && onSave(row);
